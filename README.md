@@ -5,6 +5,8 @@ This repository contains two Python scripts designed to fetch RSS feeds, store t
 - **`rss_fetcher.py`**: Fetches RSS feeds from specified sources and stores them in a PostgreSQL database.
 - **`rss_analyzer.py`**: Analyzes unprocessed RSS feed entries using the Gemini API and stores the results in the database.
 
+The scripts are feeding the Global News Analysis service: https://globalnewssite.netlify.app
+
 ## Features
 
 - **RSS Fetcher**:
