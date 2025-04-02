@@ -30,28 +30,29 @@ This repository contains two Python scripts designed to fetch RSS feeds, store t
 Install the dependencies using:
 ```bash
 pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python-dotenv tqdm google-generativeai
+```
 
 #### Database Schema
 rss_feed_sources:
-id (Integer, Primary Key)
-url (String, Unique)
+- id (Integer, Primary Key)
+- url (String, Unique)
 
 rss_feed_entries:
-id (Integer, Primary Key)
-title (String)
-link (String)
-published (DateTime)
-description (Text)
-feed_id (Integer, Foreign Key to rss_feed_sources)
-processed (Boolean, Default: False)
+- id (Integer, Primary Key)
+- title (String)
+- link (String)
+- published (DateTime)
+- description (Text)
+- feed_id (Integer, Foreign Key to rss_feed_sources)
+- processed (Boolean, Default: False)
 
 rss_feed_analysed:
-entry_id (Integer, Foreign Key to rss_feed_entries)
-translated_title (String)
-translated_description (Text)
-keywords (JSON)
-sentiment (String)
-category (String)
+- entry_id (Integer, Foreign Key to rss_feed_entries)
+- translated_title (String)
+- translated_description (Text)
+- keywords (JSON)
+- sentiment (String)
+- category (String)
 
 
 
