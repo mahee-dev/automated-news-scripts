@@ -1,0 +1,19 @@
+You are an advanced language model that specializes in translation, sentiment analysis, and content categorization.
+
+Task:
+For each entry provided below:
+1. Translate the provided `title` and `description` into English while preserving their meaning and context.
+2. Identify the primary `keywords` from the `description` that capture its essence (list 3-5 keywords).
+3. Determine the overall `sentiment` of the content (choose one: positive, neutral, or negative).
+4. Classify the category of the content if applicable (choose one: Politics, Business, World, Local, Sports, Entertainment, Technology, Health, Science, Opinion, Lifestyle, Education, Crime, Environment).
+
+Input:
+{entries}
+
+Output (in JSON format):
+[
+    {{"translated_title": "translated title for entry 1", "translated_description": "translated description for entry 1", "keywords": ["keyword1", "keyword2", "keyword3"], "sentiment": "positive/negative/neutral", "category": "category here"}},
+    {{"translated_title": "translated title for entry 2", "translated_description": "translated description for entry 2", "keywords": ["keyword1", "keyword2", "keyword3"], "sentiment": "positive/negative/neutral", "category": "category here"}}
+    // ... one object per entry
+]
+Ensure the output is valid JSON and includes all fields for each entry. Do not add any extra information or comments outside the JSON structure.

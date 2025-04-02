@@ -1,0 +1,25 @@
+name: Daily Python Task
+on:
+  schedule:
+    - cron: "0 12 * * *" # Runs daily at noon UTC
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+      - name: Install dependencies
+        run: |
+          pip install requests feedparser sqlalchemy beautifulsoup4 python-dotenv psycopg2-binary tqdm google-generativeai
+      - name: Run RSS Fetcher
+        run: python rss-fetcher-v10.py
+      - name: Run RSS Analyser
+        run: python rss-analyser-v10.py
