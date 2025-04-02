@@ -1,6 +1,3 @@
-#req pip install requests feedparser sqlalchemy psycopg2
-#includes beautifulsoup
-
 import requests
 import feedparser
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey
@@ -10,6 +7,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import logging
 from dotenv import load_dotenv
+import os
 
 # Load environment variables from .env file
 load_dotenv()
