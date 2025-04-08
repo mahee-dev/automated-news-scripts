@@ -3,6 +3,6 @@ sqlalchemy
 requests
 feedparser
 dotenv
-psycop2-binary
+psycopg2-binary
 tqdm
 google.generativeai
