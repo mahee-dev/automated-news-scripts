@@ -22,7 +22,7 @@ MODEL_NAME = "gemini-2.0-flash"  # Use appropriate model
 BATCH_SIZE = 10
 REQUESTS_PER_MINUTE = 15  # API rate limit
 SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
-
+MAX_RUNTIME_SECONDS = 3600 # 1 hour timeout
 
 def fetch_unprocessed_entries(conn, batch_size):
     """Fetch a batch of unprocessed RSS feed entries."""
@@ -60,6 +60,7 @@ def count_unprocessed_entries(conn):
         cursor.execute("SELECT COUNT(*) FROM rss_feed_entries WHERE processed = FALSE")
         count = cursor.fetchone()[0]
     return count
+
 def process_batch(entries):
     """Process a batch of RSS feed entries using Google's Gemini API in one call."""
     results = []
@@ -153,11 +154,13 @@ def process_batch(entries):
         print(f"Failed to decode JSON for batch. Error: {e}")
         print(f"Raw response: {raw_response}")
     except Exception as e:
-        print(f"Error processing batch: {type(e).__name__}: {str(e)}")
+        print(f"Error processing batch: {type(e).__name__}: {e}")
     
     return results
 
 def main():
+    start_time = time.time() # Record start time for timeout
+    processed_count_in_run = 0 # Track processed items in this run
     try:
         # Connect to the database
         conn = psycopg2.connect(DATABASE_URL)
@@ -165,17 +168,26 @@ def main():
         # Get total number of unprocessed entries for progress bar
         total_entries = count_unprocessed_entries(conn)
         print(f"Found {total_entries} unprocessed entries.")
-            
+
         # Initialize progress bar for the total process
         with tqdm(total=total_entries, desc="Processing entries", unit="entry") as pbar:
             last_request_time = 0
 
             while True:
+                # --- Timeout Check ---
+                if time.time() - start_time > MAX_RUNTIME_SECONDS:
+                    print(f"Maximum runtime of {MAX_RUNTIME_SECONDS // 60} minutes exceeded. Exiting.")
+                    break
+
                 # Fetch a batch of unprocessed entries
                 entries = fetch_unprocessed_entries(conn, BATCH_SIZE)
                 if not entries:
                     print("No more entries to process.")
                     break
+                
+                entry_ids = [entry[0] for entry in entries]
+                batch_size_fetched = len(entry_ids)
+
 
                 # Rate limiting: wait if necessary
                 current_time = time.time()
@@ -183,31 +195,49 @@ def main():
                 if time_since_last < SECONDS_PER_REQUEST:
                     time.sleep(SECONDS_PER_REQUEST - time_since_last)
 
-                # Process the batch
+                # Process the batch (catches JSON errors internally)
                 analysed_data = process_batch(entries)
                 last_request_time = time.time()
-                
-                if analysed_data:
-                    # Insert analysed data into the database
-                    insert_analysed_entries(conn, analysed_data)
 
-                    # Mark processed entries
-                    ids = [entry[0] for entry in entries]
-                    mark_as_processed(conn, ids)
+                # --- Database Operations & Error Handling ---
+                try:
+                    # Insert analysed data if successful
+                    if analysed_data:
+                        insert_analysed_entries(conn, analysed_data)
 
-                    # Commit the transaction
+                    # Mark the entire fetched batch as processed (prevents infinite loop on error)
+                    mark_as_processed(conn, entry_ids)
+
+                    # Commit changes (insertions + marking processed)
                     conn.commit()
 
-                    # Update progress bar
-                    pbar.update(len(entries))
-                    pbar.set_postfix(last_id=ids[-1], batch_size=len(entries))
-                    print(f"Processed and committed batch of {len(entries)} entries.")
-                
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        conn.rollback()
-    finally:
+                    # Update progress bar for the processed batch size
+                    pbar.update(batch_size_fetched)
+                    processed_count_in_run += batch_size_fetched
+
+                except psycopg2.Error as db_err: # Catch specific DB errors
+                    print(f"Database error during commit for batch: {db_err}. Rolling back transaction and continuing.")
+                    try:
+                        conn.rollback()
+                    except psycopg2.Error as rb_err:
+                        print(f"Rollback failed: {rb_err}")
+                except Exception as e: # Catch any other unexpected error during DB interaction
+                    print(f"Unexpected error during DB interaction: {e}. Rolling back and continuing.")
+                    try:
+                        conn.rollback() # Attempt rollback
+                    except Exception as rb_err:
+                        print(f"Rollback failed: {rb_err}")
+
+
+        # --- Cleanup after loop ---
+        pbar.close()
         conn.close()
+        print(f"Processing finished or stopped. Total entries processed/attempted in this run: {processed_count_in_run}")
+
+    except psycopg2.Error as e:
+        print(f"Database connection error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred in main: {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     main()
