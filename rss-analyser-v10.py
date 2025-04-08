@@ -1,5 +1,6 @@
 import psycopg2
 from psycopg2.extras import execute_batch
+from psycopg2.pool import SimpleConnectionPool
 import json
 from datetime import datetime
 import time
@@ -7,27 +8,56 @@ from tqdm import tqdm
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Validate required environment variables
+required_vars = ['DATABASE_URL', 'GEMINI_API_KEY']
+missing_vars = [var for var in required_vars if not os.getenv(var)]
+if missing_vars:
+    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Database setup
 DATABASE_URL = os.getenv('DATABASE_URL')
+CONNECTION_POOL = SimpleConnectionPool(
+    minconn=1,
+    maxconn=5,
+    dsn=DATABASE_URL
+)
 
 # Gemini API configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-#client = genai.Client(api_key=GEMINI_API_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-2.0-flash"  # Use appropriate model
 BATCH_SIZE = 10
 REQUESTS_PER_MINUTE = 15  # API rate limit
 SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
 MAX_RUNTIME_SECONDS = 3600 # 1 hour timeout
+PROMPT_FILE = os.getenv('PROMPT_FILE', 'prompt-google.txt')
 
-def fetch_unprocessed_entries(conn, batch_size):
-    """Fetch a batch of unprocessed RSS feed entries."""
+def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: int) -> list[tuple]:
+    """Fetch a batch of unprocessed RSS feed entries.
+    
+    Args:
+        conn: Database connection
+        batch_size: Maximum number of entries to fetch
+        
+    Returns:
+        List of tuples containing (id, title, description) for each entry
+    """
     with conn.cursor() as cursor:
         cursor.execute("""
+            SET statement_timeout = 5000;  # 5 second timeout
+            
             SELECT id, title, description
             FROM rss_feed_entries
             WHERE processed = FALSE
@@ -36,46 +66,81 @@ def fetch_unprocessed_entries(conn, batch_size):
         """, (batch_size,))
         return cursor.fetchall()
 
-def mark_as_processed(conn, ids):
-    """Mark processed entries in the database."""
+def mark_as_processed(conn: psycopg2.extensions.connection, ids: list[int], success_ids: list[int]) -> None:
+    """Mark processed entries in the database.
+    
+    Marks all as processed (ids) but also adds success flag for successful analyses.
+    
+    Args:
+        conn: Database connection
+        ids: List of all entry IDs to mark as processed
+        success_ids: List of entry IDs that were successfully analyzed
+    """
     with conn.cursor() as cursor:
+        # Mark all as processed to prevent reprocessing
+        cursor.execute("SET statement_timeout = 5000;")  # 5 second timeout
         execute_batch(cursor, """
             UPDATE rss_feed_entries
-            SET processed = TRUE
+            SET processed = TRUE,
+                processing_success = %s
             WHERE id = %s;
-        """, [(id_,) for id_ in ids])
+        """, [(id_ in success_ids, id_) for id_ in ids])
 
-def insert_analysed_entries(conn, analysed_data):
-    """Insert analysed data into the rss_feed_analysed table."""
+def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data: list[tuple]) -> None:
+    """Insert analysed data into the rss_feed_analysed table.
+    
+    Args:
+        conn: Database connection
+        analysed_data: List of tuples containing analysis results
+    """
     with conn.cursor() as cursor:
+        cursor.execute("SET statement_timeout = 5000;")  # 5 second timeout
         execute_batch(cursor, """
             INSERT INTO rss_feed_analysed 
             (entry_id, translated_title, translated_description, keywords, sentiment, category)
             VALUES (%s, %s, %s, %s, %s, %s);
         """, analysed_data)
 
-def count_unprocessed_entries(conn):
-    """Count total unprocessed entries for progress bar"""
+def count_unprocessed_entries(conn: psycopg2.extensions.connection) -> int:
+    """Count total unprocessed entries for progress bar.
+    
+    Args:
+        conn: Database connection
+        
+    Returns:
+        Number of unprocessed entries
+    """
     with conn.cursor() as cursor:
-        cursor.execute("SELECT COUNT(*) FROM rss_feed_entries WHERE processed = FALSE")
+        cursor.execute("""
+            SET statement_timeout = 5000;  # 5 second timeout
+            SELECT COUNT(*) FROM rss_feed_entries WHERE processed = FALSE
+        """)
         count = cursor.fetchone()[0]
     return count
 
-def process_batch(entries):
-    """Process a batch of RSS feed entries using Google's Gemini API in one call."""
+def process_batch(entries: list[tuple]) -> list[tuple]:
+    """Process a batch of RSS feed entries using Google's Gemini API.
+    
+    Args:
+        entries: List of tuples containing (id, title, description)
+        
+    Returns:
+        List of tuples containing analysis results for successful entries
+    """
     results = []
+    raw_response = None
 
     # Check entries
     if not entries:
-        print("No entries to process in batch.")
+        logger.warning("No entries to process in batch.")
         return results
 
     # Load prompt template
     try:
-        with open('prompt-google.txt', 'r') as f:
+        with open(PROMPT_FILE, 'r') as f:
             prompt_template = f.read()
     except FileNotFoundError:
-        print("Error: prompt-google.txt not found.")
+        logger.error("Prompt file not found: %s", PROMPT_FILE)
         return results
     
     # Initialize the model
@@ -92,24 +157,36 @@ def process_batch(entries):
         entry_map[idx + 1] = entry_id
     
     if not batch_input.strip():
-        print("Error: Batch input is empty after construction.")
+        logger.error("Batch input is empty after construction")
         return results
 
     try:
         # Format prompt with all entries
         prompt = prompt_template.format(entries=batch_input)
         if not prompt.strip():
-            print("Error: Formatted prompt is empty.")
+            logger.error("Formatted prompt is empty")
             return results
         
-        # Call the Gemini API once for the batch
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.7,
-                "max_output_tokens": 2000 * BATCH_SIZE,
-            }
-        )
+        # Call the Gemini API with retry logic
+        max_retries = 3
+        retry_delay = 1  # Initial delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                response = model.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0.7,
+                        "max_output_tokens": 2000 * BATCH_SIZE,
+                    }
+                )
+                break  # Success - exit retry loop
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise  # Re-raise on final attempt
+                logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
         
         raw_response = response.text
         
@@ -121,25 +198,35 @@ def process_batch(entries):
             cleaned_response = cleaned_response.split("```")[0]
         cleaned_response = cleaned_response.strip()
 
-        # Parse JSON response
-        data = json.loads(cleaned_response)
+        # Parse JSON response with additional validation
+        try:
+            data = json.loads(cleaned_response)
+            if not isinstance(data, list):
+                raise ValueError("Top-level JSON must be an array")
+            for item in data:
+                if not isinstance(item, dict):
+                    raise ValueError("Each array element must be an object")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Invalid JSON response format: {e}")
+            logger.debug(f"Response content: {cleaned_response}")
+            return results
         
         # Verify it's a list and process results
         if not isinstance(data, list):
-            print(f"Error: Response is not a list: {type(data)}")
+            logger.error(f"Response is not a list: {type(data)}")
             return results
         if len(data) != len(entries):
-            print(f"Warning: Expected {len(entries)} results, got {len(data)}")
+            logger.warning(f"Expected {len(entries)} results, got {len(data)}")
 
         required_fields = ["translated_title", "translated_description", "keywords", "sentiment", "category"]
         for idx, result in enumerate(data[:len(entries)]):  # Limit to input size
             entry_id = entry_map.get(idx + 1)
             if not entry_id:
-                print(f"Warning: No mapping for index {idx + 1}")
+                logger.warning(f"No mapping for index {idx + 1}")
                 continue
             missing_fields = [field for field in required_fields if field not in result]
             if missing_fields:
-                print(f"Warning: Missing fields for entry ID {entry_id}: {missing_fields}")
+                logger.warning(f"Missing fields for entry ID {entry_id}: {missing_fields}")
                 continue
             results.append((
                 entry_id,
@@ -151,10 +238,10 @@ def process_batch(entries):
             ))
 
     except json.JSONDecodeError as e:
-        print(f"Failed to decode JSON for batch. Error: {e}")
-        print(f"Raw response: {raw_response}")
+        logger.error(f"Failed to decode JSON for batch. Error: {e}")
+        logger.debug(f"Raw response: {raw_response}")
     except Exception as e:
-        print(f"Error processing batch: {type(e).__name__}: {e}")
+        logger.error(f"Error processing batch: {type(e).__name__}: {e}")
     
     return results
 
@@ -162,12 +249,12 @@ def main():
     start_time = time.time() # Record start time for timeout
     processed_count_in_run = 0 # Track processed items in this run
     try:
-        # Connect to the database
-        conn = psycopg2.connect(DATABASE_URL)
+        # Get connection from pool
+        conn = connection_pool.getconn()
 
         # Get total number of unprocessed entries for progress bar
         total_entries = count_unprocessed_entries(conn)
-        print(f"Found {total_entries} unprocessed entries.")
+        logger.info(f"Found {total_entries} unprocessed entries")
 
         # Initialize progress bar for the total process
         with tqdm(total=total_entries, desc="Processing entries", unit="entry") as pbar:
@@ -176,13 +263,13 @@ def main():
             while True:
                 # --- Timeout Check ---
                 if time.time() - start_time > MAX_RUNTIME_SECONDS:
-                    print(f"Maximum runtime of {MAX_RUNTIME_SECONDS // 60} minutes exceeded. Exiting.")
+                    logger.warning(f"Maximum runtime of {MAX_RUNTIME_SECONDS // 60} minutes exceeded. Exiting.")
                     break
 
                 # Fetch a batch of unprocessed entries
                 entries = fetch_unprocessed_entries(conn, BATCH_SIZE)
                 if not entries:
-                    print("No more entries to process.")
+                    logger.info("No more entries to process")
                     break
                 
                 entry_ids = [entry[0] for entry in entries]
@@ -201,12 +288,14 @@ def main():
 
                 # --- Database Operations & Error Handling ---
                 try:
+                    success_ids = [d[0] for d in analysed_data]
+                    
                     # Insert analysed data if successful
                     if analysed_data:
                         insert_analysed_entries(conn, analysed_data)
 
-                    # Mark the entire fetched batch as processed (prevents infinite loop on error)
-                    mark_as_processed(conn, entry_ids)
+                    # Mark batch as processed, with success status per entry
+                    mark_as_processed(conn, entry_ids, success_ids)
 
                     # Commit changes (insertions + marking processed)
                     conn.commit()
@@ -216,28 +305,29 @@ def main():
                     processed_count_in_run += batch_size_fetched
 
                 except psycopg2.Error as db_err: # Catch specific DB errors
-                    print(f"Database error during commit for batch: {db_err}. Rolling back transaction and continuing.")
+                    logger.error(f"Database error during commit for batch: {db_err}. Rolling back transaction and continuing.")
                     try:
                         conn.rollback()
                     except psycopg2.Error as rb_err:
-                        print(f"Rollback failed: {rb_err}")
+                        logger.error(f"Rollback failed: {rb_err}")
                 except Exception as e: # Catch any other unexpected error during DB interaction
-                    print(f"Unexpected error during DB interaction: {e}. Rolling back and continuing.")
+                    logger.error(f"Unexpected error during DB interaction: {e}. Rolling back and continuing.")
                     try:
                         conn.rollback() # Attempt rollback
                     except Exception as rb_err:
-                        print(f"Rollback failed: {rb_err}")
+                        logger.error(f"Rollback failed: {rb_err}")
 
 
         # --- Cleanup after loop ---
         pbar.close()
-        conn.close()
-        print(f"Processing finished or stopped. Total entries processed/attempted in this run: {processed_count_in_run}")
+        # Return connection to pool
+        connection_pool.putconn(conn)
+        logger.info(f"Processing finished. Total entries processed: {processed_count_in_run}")
 
     except psycopg2.Error as e:
-        print(f"Database connection error: {e}")
+        logger.error(f"Database connection error: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred in main: {type(e).__name__}: {e}")
+        logger.error(f"Unexpected error in main: {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
     main()
