@@ -28,11 +28,15 @@ logger = logging.getLogger(__name__)
 
 # Database setup
 DATABASE_URL = os.getenv('DATABASE_URL')
-CONNECTION_POOL = SimpleConnectionPool(
-    minconn=1,
-    maxconn=5,
-    dsn=DATABASE_URL
-)
+connection_pool = None
+
+def init_connection_pool():
+    global connection_pool
+    connection_pool = SimpleConnectionPool(
+        minconn=1,
+        maxconn=5,
+        dsn=DATABASE_URL
+    )
 
 # Gemini API configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -56,7 +60,7 @@ def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: 
     """
     with conn.cursor() as cursor:
         cursor.execute("""
-            SET statement_timeout = 5000;  # 5 second timeout
+            SET statement_timeout = 5000;  -- 5 second timeout
             
             SELECT id, title, description
             FROM rss_feed_entries
@@ -94,7 +98,7 @@ def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data:
         analysed_data: List of tuples containing analysis results
     """
     with conn.cursor() as cursor:
-        cursor.execute("SET statement_timeout = 5000;")  # 5 second timeout
+        cursor.execute("SET statement_timeout = 5000;")  # Set 5 second timeout
         execute_batch(cursor, """
             INSERT INTO rss_feed_analysed 
             (entry_id, translated_title, translated_description, keywords, sentiment, category)
@@ -112,7 +116,7 @@ def count_unprocessed_entries(conn: psycopg2.extensions.connection) -> int:
     """
     with conn.cursor() as cursor:
         cursor.execute("""
-            SET statement_timeout = 5000;  # 5 second timeout
+            SET statement_timeout = 5000;  -- 5 second timeout
             SELECT COUNT(*) FROM rss_feed_entries WHERE processed = FALSE
         """)
         count = cursor.fetchone()[0]
@@ -330,4 +334,9 @@ def main():
         logger.error(f"Unexpected error in main: {type(e).__name__}: {e}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        init_connection_pool()
+        main()
+    finally:
+        if connection_pool:
+            connection_pool.closeall()

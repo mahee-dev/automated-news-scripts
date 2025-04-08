@@ -2,8 +2,8 @@ You are an advanced language model that specializes in translation, sentiment an
 
 Task:
 For each entry provided below:
-1. Translate the provided `title` and `description` into English while preserving their meaning and context.
-2. Identify the primary `keywords` from the `description` that capture its essence (list 3-5 keywords).
+1. Translate the provided `title` and `description` into English while preserving their meaning and context. If they are already in English copy the text.
+2. Identify the primary `keywords` from the `description` that capture its essence (list 3-7 keywords).
 3. Determine the overall `sentiment` of the content (choose one: positive, neutral, or negative).
 4. Classify the category of the content if applicable (choose one: Politics, Business, World, Local, Sports, Entertainment, Technology, Health, Science, Opinion, Lifestyle, Education, Crime, Environment).
 
