@@ -70,25 +70,23 @@ def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: 
         """, (batch_size,))
         return cursor.fetchall()
 
+
 def mark_as_processed(conn: psycopg2.extensions.connection, ids: list[int], success_ids: list[int]) -> None:
-    """Mark processed entries in the database.
-    
-    Marks all as processed (ids) but also adds success flag for successful analyses.
-    
+    """Mark processed entries in the database by setting processed = TRUE.
+
     Args:
         conn: Database connection
         ids: List of all entry IDs to mark as processed
-        success_ids: List of entry IDs that were successfully analyzed
+        success_ids: List of entry IDs that were successfully analyzed (unused here)
     """
+    # Note: Update only sets 'processed = TRUE' as 'processing_success' column is not present.
     with conn.cursor() as cursor:
-        # Mark all as processed to prevent reprocessing
         cursor.execute("SET statement_timeout = 5000;")  # 5 second timeout
         execute_batch(cursor, """
             UPDATE rss_feed_entries
-            SET processed = TRUE,
-                processing_success = %s
+            SET processed = TRUE
             WHERE id = %s;
-        """, [(id_ in success_ids, id_) for id_ in ids])
+        """, [(id_,) for id_ in ids]) # Parameter tuple format changed
 
 def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data: list[tuple]) -> None:
     """Insert analysed data into the rss_feed_analysed table.
