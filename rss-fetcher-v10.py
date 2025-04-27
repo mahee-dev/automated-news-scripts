@@ -95,7 +95,7 @@ def fetch_and_save_rss_feeds():
 
             # Add new entries for the current feed, limiting to the latest 20
             # add_new_entries(session, feed.entries, source.id)
-            add_new_entries(session, feed.entries, source.id, limit=10)
+            add_new_entries(session, feed.entries, source.id, limit=20)
 
             # Log the number of processed entries
             logging.info(f"Processed {len(feed.entries)} entries from {source.url}.")
