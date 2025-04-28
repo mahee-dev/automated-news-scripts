@@ -9,6 +9,9 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import os
 import logging
+from pydantic import BaseModel, ValidationError, Field
+from typing import List
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,6 +50,16 @@ REQUESTS_PER_MINUTE = 15  # API rate limit
 SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
 MAX_RUNTIME_SECONDS = 3600 # 1 hour timeout
 PROMPT_FILE = os.getenv('PROMPT_FILE', 'prompt-google.txt')
+
+
+
+class ArticleResponse(BaseModel):
+    translated_title: str = Field(default="")
+    translated_description: str = Field(default="")
+    keywords: List[str] = Field(default_factory=list)
+    sentiment: str = Field(default="")
+    category: str = Field(default="")
+
 
 def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: int) -> list[tuple]:
     """Fetch a batch of unprocessed RSS feed entries.
@@ -121,18 +134,10 @@ def count_unprocessed_entries(conn: psycopg2.extensions.connection) -> int:
     return count
 
 def process_batch(entries: list[tuple]) -> list[tuple]:
-    """Process a batch of RSS feed entries using Google's Gemini API.
-    
-    Args:
-        entries: List of tuples containing (id, title, description)
-        
-    Returns:
-        List of tuples containing analysis results for successful entries
-    """
+    """Process a batch of RSS feed entries using Google's Gemini API, with Pydantic validation."""
     results = []
     raw_response = None
 
-    # Check entries
     if not entries:
         logger.warning("No entries to process in batch.")
         return results
@@ -144,11 +149,9 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
     except FileNotFoundError:
         logger.error("Prompt file not found: %s", PROMPT_FILE)
         return results
-    
-    # Initialize the model
+
     model = genai.GenerativeModel(MODEL_NAME)
 
-    # Prepare batch input
     batch_input = ""
     entry_map = {}
     for idx, entry in enumerate(entries):
@@ -157,22 +160,20 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
         description = str(description) if description is not None else "No description"
         batch_input += f"Entry {idx + 1}:\n- Title: {title}\n- Description: {description}\n\n"
         entry_map[idx + 1] = entry_id
-    
+
     if not batch_input.strip():
         logger.error("Batch input is empty after construction")
         return results
 
     try:
-        # Format prompt with all entries
         prompt = prompt_template.format(entries=batch_input)
         if not prompt.strip():
             logger.error("Formatted prompt is empty")
             return results
-        
-        # Call the Gemini API with retry logic
+
         max_retries = 3
-        retry_delay = 1  # Initial delay in seconds
-        
+        retry_delay = 1
+
         for attempt in range(max_retries):
             try:
                 response = model.generate_content(
@@ -182,17 +183,16 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
                         "max_output_tokens": 2000 * BATCH_SIZE,
                     }
                 )
-                break  # Success - exit retry loop
+                break
             except Exception as e:
                 if attempt == max_retries - 1:
-                    raise  # Re-raise on final attempt
+                    raise
                 logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 time.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
-        
+                retry_delay *= 2
+
         raw_response = response.text
-        
-        # Clean response
+
         cleaned_response = raw_response.strip()
         if cleaned_response.startswith("```json"):
             cleaned_response = cleaned_response.split("```json")[1]
@@ -200,51 +200,44 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
             cleaned_response = cleaned_response.split("```")[0]
         cleaned_response = cleaned_response.strip()
 
-        # Parse JSON response with additional validation
+        # --- Parse and Validate
         try:
             data = json.loads(cleaned_response)
             if not isinstance(data, list):
                 raise ValueError("Top-level JSON must be an array")
-            for item in data:
-                if not isinstance(item, dict):
-                    raise ValueError("Each array element must be an object")
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Invalid JSON response format: {e}")
             logger.debug(f"Response content: {cleaned_response}")
             return results
-        
-        # Verify it's a list and process results
-        if not isinstance(data, list):
-            logger.error(f"Response is not a list: {type(data)}")
-            return results
+
         if len(data) != len(entries):
             logger.warning(f"Expected {len(entries)} results, got {len(data)}")
 
-        required_fields = ["translated_title", "translated_description", "keywords", "sentiment", "category"]
-        for idx, result in enumerate(data[:len(entries)]):  # Limit to input size
+        for idx, raw_item in enumerate(data[:len(entries)]):
             entry_id = entry_map.get(idx + 1)
             if not entry_id:
                 logger.warning(f"No mapping for index {idx + 1}")
                 continue
-            missing_fields = [field for field in required_fields if field not in result]
-            if missing_fields:
-                logger.warning(f"Missing fields for entry ID {entry_id}: {missing_fields}")
-                continue
+
+            try:
+                validated_item = ArticleResponse(**raw_item)
+            except ValidationError as ve:
+                logger.warning(f"Validation error for entry ID {entry_id}: {ve}")
+                continue  # Skip invalid entry
+
             results.append((
                 entry_id,
-                result["translated_title"],
-                result["translated_description"],
-                json.dumps(result["keywords"]),
-                result["sentiment"],
-                result["category"]
+                validated_item.translated_title,
+                validated_item.translated_description,
+                json.dumps(validated_item.keywords),
+                validated_item.sentiment,
+                validated_item.category
             ))
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to decode JSON for batch. Error: {e}")
-        logger.debug(f"Raw response: {raw_response}")
     except Exception as e:
         logger.error(f"Error processing batch: {type(e).__name__}: {e}")
-    
+        logger.debug(f"Raw response: {raw_response}")
+
     return results
 
 def main():
