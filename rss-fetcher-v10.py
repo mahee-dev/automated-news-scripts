@@ -22,7 +22,7 @@ logging.basicConfig(
 # Database setup
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 Base = declarative_base()
 
 # Define the RSS feed source model
@@ -80,37 +80,33 @@ def add_new_entries(session, feed_entries, source_id, limit=15):
 
 # Function to fetch and save RSS feeds from sources in the database
 def fetch_and_save_rss_feeds():
+    feed_sources = None
     Session = sessionmaker(bind=engine)
-    session = Session()
 
-    # Fetch all RSS feed sources from the database
-    feed_sources = session.query(RSSFeedSource).all()
+    with Session() as session:
+        feed_sources = session.query(RSSFeedSource).all()
 
     for source in feed_sources:
+        session = Session()
         try:
-            # Remove SSL verification for security
-            response = requests.get(source.url)  # SSL verification is now enabled
-            response.raise_for_status()  # Raise an error for bad responses
+            response = requests.get(source.url)
+            response.raise_for_status()
             feed = feedparser.parse(response.content)
 
-            # Add new entries for the current feed, limiting to the latest 20
-            # add_new_entries(session, feed.entries, source.id)
             add_new_entries(session, feed.entries, source.id, limit=20)
-
-            # Log the number of processed entries
             logging.info(f"Processed {len(feed.entries)} entries from {source.url}.")
             session.commit()
+
         except requests.exceptions.SSLError as ssl_error:
-            # Log SSL certificate errors
             logging.error(f"SSL error fetching the RSS feed from {source.url}: {ssl_error}")
         except requests.exceptions.RequestException as e:
-            # Log the error
             logging.error(f"Error fetching the RSS feed from {source.url}: {e}")
         except Exception as e:
-            # Log any other errors
             logging.error(f"An error occurred while processing {source.url}: {e}")
+            session.rollback()
+        finally:
+            session.close()
 
-    session.close()
 
 if __name__ == '__main__':
     fetch_and_save_rss_feeds()
