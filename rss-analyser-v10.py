@@ -45,7 +45,7 @@ def init_connection_pool():
 # Gemini API configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.0-flash"  # Use appropriate model
+MODEL_NAME = "gemini-2.5-flash"  # Use appropriate model
 BATCH_SIZE = 10
 REQUESTS_PER_MINUTE = 15  # API rate limit
 SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
