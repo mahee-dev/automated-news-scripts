@@ -7,13 +7,15 @@ from bs4 import BeautifulSoup
 import logging
 from dotenv import load_dotenv
 import os
+import sys
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    filename='rss_fetcher.log',  # Log file name
+    #filename='rss_fetcher.log',  # Log file name
+    stream=sys.stdout,
     level=logging.INFO,           # Log level
     format='%(asctime)s - %(levelname)s - %(message)s'  # Log message format
 )
