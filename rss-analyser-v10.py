@@ -1,3 +1,4 @@
+# rss-analyser-v10.py
 import psycopg2
 from psycopg2.extras import execute_batch
 from psycopg2.pool import SimpleConnectionPool
