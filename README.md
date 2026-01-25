@@ -1,9 +1,9 @@
 # RSS Feed Fetcher and Analyzer
 
-This repository contains two Python scripts designed to fetch RSS feeds, store them in a database, and analyze their content using Google's Gemini API. These scripts are intended to be run as cron jobs on GitHub Actions for automated, scheduled execution.
+This repository contains two Python scripts designed to fetch RSS feeds, store them in a database, and analyze their content using AI (Google Gemini or OpenRouter). These scripts are intended to be run as cron jobs on GitHub Actions for automated, scheduled execution.
 
 - **`rss-fetcher-v10.py`**: Fetches RSS feeds from specified sources and stores them in a PostgreSQL database.
-- **`rss-analyser-v10.py`**: Analyzes unprocessed RSS feed entries using the Gemini API and stores the results in the database.
+- **`rss-analyser-v10.py`**: Analyzes unprocessed RSS feed entries using AI (Gemini or OpenRouter) and stores the results in the database.
 
 The scripts are feeding the Global News Analysis service: https://globalnewssite.netlify.app
 
@@ -23,8 +23,9 @@ The scripts are feeding the Global News Analysis service: https://globalnewssite
                                │
                                ▼
                         ┌─────────────────┐
-                        │  Gemini 2.5     │
-                        │  Flash API      │
+                        │  AI Provider    │
+                        │  (Gemini or     │
+                        │  OpenRouter)    │
                         └─────────────────┘
 ```
 
@@ -40,7 +41,7 @@ The scripts are feeding the Global News Analysis service: https://globalnewssite
 - Logs errors and processing details for debugging
 
 ### RSS Analyzer
-- Uses **Gemini 2.5-Flash** model for content analysis
+- Supports multiple AI providers: **Google Gemini** or **OpenRouter** (configurable via `AI_PROVIDER`)
 - Processes unprocessed RSS entries in batches (batch size: **10**)
 - Extracts translated titles, descriptions, keywords, sentiment, and categories
 - Updates the database with analysis results and marks entries as processed
@@ -66,22 +67,26 @@ Content is classified into one of 14 categories:
 
 - Python 3.8+
 - PostgreSQL database
-- Google Gemini API key
+- AI provider API key (Google Gemini or OpenRouter)
 - GitHub account (for running as cron jobs via GitHub Actions)
 
 ### Required Python Packages
 Install the dependencies using:
 ```bash
-pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python-dotenv tqdm google-generativeai
+pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python-dotenv tqdm google-generativeai openai pydantic
 ```
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `GEMINI_API_KEY` | Google Gemini API key |
-| `PROMPT_FILE` | Path to prompt template (default: `prompt-google.txt`) |
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | (required) |
+| `AI_PROVIDER` | AI provider to use: `gemini` or `openrouter` | `openrouter` |
+| `GEMINI_API_KEY` | Google Gemini API key | (required if using gemini) |
+| `GEMINI_MODEL` | Model to use via Gemini | `gemini-2.5-flash` |
+| `OPENROUTER_API_KEY` | OpenRouter API key | (required if using openrouter) |
+| `OPENROUTER_MODEL` | Model to use via OpenRouter | `x-ai/grok-4.1-fast` |
+| `PROMPT_FILE` | Path to prompt template | `prompt-google.txt` |
 
 ## GitHub Actions
 

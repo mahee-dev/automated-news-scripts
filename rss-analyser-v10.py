@@ -7,6 +7,7 @@ from datetime import datetime
 import time
 from tqdm import tqdm
 import google.generativeai as genai
+from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import logging
@@ -18,7 +19,16 @@ from typing import List
 load_dotenv()
 
 # Validate required environment variables
-required_vars = ['DATABASE_URL', 'GEMINI_API_KEY']
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'openrouter').lower()
+
+required_vars = ['DATABASE_URL']
+if AI_PROVIDER == 'gemini':
+    required_vars.append('GEMINI_API_KEY')
+elif AI_PROVIDER == 'openrouter':
+    required_vars.append('OPENROUTER_API_KEY')
+else:
+    raise ValueError(f"Invalid AI_PROVIDER: {AI_PROVIDER}. Must be 'gemini' or 'openrouter'")
+
 missing_vars = [var for var in required_vars if not os.getenv(var)]
 if missing_vars:
     raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
@@ -42,10 +52,20 @@ def init_connection_pool():
         dsn=DATABASE_URL
     )
 
-# Gemini API configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.5-flash"  # Use appropriate model
+# AI Provider configuration
+if AI_PROVIDER == 'gemini':
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    genai.configure(api_key=GEMINI_API_KEY)
+    MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+elif AI_PROVIDER == 'openrouter':
+    openrouter_client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.getenv('OPENROUTER_API_KEY'),
+    )
+    MODEL_NAME = os.getenv('OPENROUTER_MODEL', 'x-ai/grok-4.1-fast')
+
+logger.info(f"Using AI provider: {AI_PROVIDER}, model: {MODEL_NAME}")
+
 BATCH_SIZE = 10
 REQUESTS_PER_MINUTE = 15  # API rate limit
 SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
@@ -151,8 +171,6 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
         logger.error("Prompt file not found: %s", PROMPT_FILE)
         return results
 
-    model = genai.GenerativeModel(MODEL_NAME)
-
     batch_input = ""
     entry_map = {}
     for idx, entry in enumerate(entries):
@@ -177,13 +195,24 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
 
         for attempt in range(max_retries):
             try:
-                response = model.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0.7,
-                        "max_output_tokens": 2000 * BATCH_SIZE,
-                    }
-                )
+                if AI_PROVIDER == 'gemini':
+                    model = genai.GenerativeModel(MODEL_NAME)
+                    response = model.generate_content(
+                        prompt,
+                        generation_config={
+                            "temperature": 0.7,
+                            "max_output_tokens": 2000 * BATCH_SIZE,
+                        }
+                    )
+                    raw_response = response.text
+                elif AI_PROVIDER == 'openrouter':
+                    response = openrouter_client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.7,
+                        max_tokens=2000 * BATCH_SIZE,
+                    )
+                    raw_response = response.choices[0].message.content
                 break
             except Exception as e:
                 if attempt == max_retries - 1:
@@ -191,8 +220,6 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
                 logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 time.sleep(retry_delay)
                 retry_delay *= 2
-
-        raw_response = response.text
 
         cleaned_response = raw_response.strip()
         if cleaned_response.startswith("```json"):

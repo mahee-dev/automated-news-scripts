@@ -6,3 +6,5 @@ dotenv
 psycopg2
 tqdm
 google.generativeai
+openai
+pydantic
