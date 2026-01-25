@@ -3,7 +3,7 @@ sqlalchemy
 requests
 feedparser
 dotenv
-psycopg2
+psycopg2-binary>=2.9
 tqdm
 google.generativeai
 openai
