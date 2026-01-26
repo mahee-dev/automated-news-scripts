@@ -5,6 +5,6 @@ feedparser
 dotenv
 psycopg2-binary>=2.9
 tqdm
-google.generativeai
+google-genai
 openai
 pydantic

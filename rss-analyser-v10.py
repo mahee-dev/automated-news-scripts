@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 import time
 from tqdm import tqdm
-import google.generativeai as genai
+from google import genai
 from openai import OpenAI
 from dotenv import load_dotenv
 import os
@@ -54,8 +54,7 @@ def init_connection_pool():
 
 # AI Provider configuration
 if AI_PROVIDER == 'gemini':
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
     MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 elif AI_PROVIDER == 'openrouter':
     openrouter_client = OpenAI(
@@ -67,8 +66,9 @@ elif AI_PROVIDER == 'openrouter':
 logger.info(f"Using AI provider: {AI_PROVIDER}, model: {MODEL_NAME}")
 
 BATCH_SIZE = 10
-REQUESTS_PER_MINUTE = 15  # API rate limit
-SECONDS_PER_REQUEST = 60 / REQUESTS_PER_MINUTE  # 4 seconds per request
+# Provider-specific rate limiting: OpenRouter doesn't need Gemini's rate limits
+DEFAULT_RATE_LIMIT = 0 if AI_PROVIDER == 'openrouter' else 4
+SECONDS_PER_REQUEST = float(os.getenv('RATE_LIMIT_SECONDS', DEFAULT_RATE_LIMIT))
 MAX_RUNTIME_SECONDS = 3600 # 1 hour timeout
 PROMPT_FILE = os.getenv('PROMPT_FILE', 'prompt-google.txt')
 
@@ -196,13 +196,13 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
         for attempt in range(max_retries):
             try:
                 if AI_PROVIDER == 'gemini':
-                    model = genai.GenerativeModel(MODEL_NAME)
-                    response = model.generate_content(
-                        prompt,
-                        generation_config={
-                            "temperature": 0.7,
-                            "max_output_tokens": 2000 * BATCH_SIZE,
-                        }
+                    response = gemini_client.models.generate_content(
+                        model=MODEL_NAME,
+                        contents=prompt,
+                        config=genai.types.GenerateContentConfig(
+                            temperature=0.7,
+                            max_output_tokens=2000 * BATCH_SIZE,
+                        )
                     )
                     raw_response = response.text
                 elif AI_PROVIDER == 'openrouter':

@@ -73,7 +73,7 @@ Content is classified into one of 14 categories:
 ### Required Python Packages
 Install the dependencies using:
 ```bash
-pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python-dotenv tqdm google-generativeai openai pydantic
+pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python-dotenv tqdm google-genai openai pydantic
 ```
 
 ## Environment Variables
@@ -87,6 +87,7 @@ pip install requests feedparser sqlalchemy psycopg2-binary beautifulsoup4 python
 | `OPENROUTER_API_KEY` | OpenRouter API key | (required if using openrouter) |
 | `OPENROUTER_MODEL` | Model to use via OpenRouter | `x-ai/grok-4.1-fast` |
 | `PROMPT_FILE` | Path to prompt template | `prompt-google.txt` |
+| `RATE_LIMIT_SECONDS` | Seconds between API requests | `0` for openrouter, `4` for gemini |
 
 ## GitHub Actions
 
