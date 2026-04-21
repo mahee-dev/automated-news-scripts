@@ -94,8 +94,8 @@ def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: 
     """
     with conn.cursor() as cursor:
         cursor.execute("""
-            SET statement_timeout = 5000;  -- 5 second timeout
-            
+            SET LOCAL statement_timeout = 60000;
+
             SELECT id, title, description
             FROM rss_feed_entries
             WHERE processed = FALSE
@@ -115,12 +115,12 @@ def mark_as_processed(conn: psycopg2.extensions.connection, ids: list[int], succ
     """
     # Note: Update only sets 'processed = TRUE' as 'processing_success' column is not present.
     with conn.cursor() as cursor:
-        cursor.execute("SET statement_timeout = 5000;")  # 5 second timeout
+        cursor.execute("SET LOCAL statement_timeout = 60000;")
         execute_batch(cursor, """
             UPDATE rss_feed_entries
             SET processed = TRUE
             WHERE id = %s;
-        """, [(id_,) for id_ in ids]) # Parameter tuple format changed
+        """, [(id_,) for id_ in ids])
 
 def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data: list[tuple]) -> None:
     """Insert analysed data into the rss_feed_analysed table.
@@ -130,9 +130,9 @@ def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data:
         analysed_data: List of tuples containing analysis results
     """
     with conn.cursor() as cursor:
-        cursor.execute("SET statement_timeout = 5000;")  # Set 5 second timeout
+        cursor.execute("SET LOCAL statement_timeout = 60000;")
         execute_batch(cursor, """
-            INSERT INTO rss_feed_analysed 
+            INSERT INTO rss_feed_analysed
             (entry_id, translated_title, translated_description, keywords, sentiment, category)
             VALUES (%s, %s, %s, %s, %s, %s);
         """, analysed_data)
@@ -148,7 +148,7 @@ def count_unprocessed_entries(conn: psycopg2.extensions.connection) -> int:
     """
     with conn.cursor() as cursor:
         cursor.execute("""
-            SET statement_timeout = 5000;  -- 5 second timeout
+            SET LOCAL statement_timeout = 60000;
             SELECT COUNT(*) FROM rss_feed_entries WHERE processed = FALSE
         """)
         count = cursor.fetchone()[0]
@@ -269,88 +269,89 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
     return results
 
 def main():
-    start_time = time.time() # Record start time for timeout
-    processed_count_in_run = 0 # Track processed items in this run
+    start_time = time.time()
+    processed_count_in_run = 0
+    conn = None
+
     try:
-        # Get connection from pool
         conn = connection_pool.getconn()
 
-        # Get total number of unprocessed entries for progress bar
         total_entries = count_unprocessed_entries(conn)
         logger.info(f"Found {total_entries} unprocessed entries")
 
-        # Initialize progress bar for the total process
         with tqdm(total=total_entries, desc="Processing entries", unit="entry") as pbar:
             last_request_time = 0
 
             while True:
-                # --- Timeout Check ---
                 if time.time() - start_time > MAX_RUNTIME_SECONDS:
                     logger.warning(f"Maximum runtime of {MAX_RUNTIME_SECONDS // 60} minutes exceeded. Exiting.")
                     break
 
-                # Fetch a batch of unprocessed entries
                 entries = fetch_unprocessed_entries(conn, BATCH_SIZE)
                 if not entries:
                     logger.info("No more entries to process")
                     break
-                
+
                 entry_ids = [entry[0] for entry in entries]
                 batch_size_fetched = len(entry_ids)
 
-
-                # Rate limiting: wait if necessary
                 current_time = time.time()
                 time_since_last = current_time - last_request_time
                 if time_since_last < SECONDS_PER_REQUEST:
                     time.sleep(SECONDS_PER_REQUEST - time_since_last)
 
-                # Process the batch (catches JSON errors internally)
                 analysed_data = process_batch(entries)
                 last_request_time = time.time()
 
-                # --- Database Operations & Error Handling ---
                 try:
                     success_ids = [d[0] for d in analysed_data]
-                    
-                    # Insert analysed data if successful
+
                     if analysed_data:
                         insert_analysed_entries(conn, analysed_data)
 
-                    # Mark batch as processed, with success status per entry
                     mark_as_processed(conn, entry_ids, success_ids)
 
-                    # Commit changes (insertions + marking processed)
                     conn.commit()
 
-                    # Update progress bar for the processed batch size
                     pbar.update(batch_size_fetched)
                     processed_count_in_run += batch_size_fetched
 
-                except psycopg2.Error as db_err: # Catch specific DB errors
+                except psycopg2.Error as db_err:
                     logger.error(f"Database error during commit for batch: {db_err}. Rolling back transaction and continuing.")
                     try:
                         conn.rollback()
                     except psycopg2.Error as rb_err:
                         logger.error(f"Rollback failed: {rb_err}")
-                except Exception as e: # Catch any other unexpected error during DB interaction
+                except Exception as e:
                     logger.error(f"Unexpected error during DB interaction: {e}. Rolling back and continuing.")
                     try:
-                        conn.rollback() # Attempt rollback
+                        conn.rollback()
                     except Exception as rb_err:
                         logger.error(f"Rollback failed: {rb_err}")
 
-
-        # --- Cleanup after loop ---
-        pbar.close()
-        # Return connection to pool
-        connection_pool.putconn(conn)
         logger.info(f"Processing finished. Total entries processed: {processed_count_in_run}")
 
     except psycopg2.Error as e:
         logger.error(f"Database connection error: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
     except Exception as e:
         logger.error(f"Unexpected error in main: {type(e).__name__}: {e}")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        if conn:
+            connection_pool.putconn(conn)
 
 if __name__ == "__main__":
     try:
