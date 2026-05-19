@@ -61,7 +61,7 @@ elif AI_PROVIDER == 'openrouter':
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv('OPENROUTER_API_KEY'),
     )
-    MODEL_NAME = os.getenv('OPENROUTER_MODEL', 'x-ai/grok-4.1-fast')
+    MODEL_NAME = os.getenv('OPENROUTER_MODEL', 'deepseek/deepseek-v4-flash')
 
 logger.info(f"Using AI provider: {AI_PROVIDER}, model: {MODEL_NAME}")
 
