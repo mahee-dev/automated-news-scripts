@@ -3,16 +3,23 @@ import psycopg2
 from psycopg2.extras import execute_batch
 from psycopg2.pool import SimpleConnectionPool
 import json
-from datetime import datetime
 import time
 from tqdm import tqdm
-from google import genai
-from openai import OpenAI
 from dotenv import load_dotenv
 import os
 import logging
 from pydantic import BaseModel, ValidationError, Field
-from typing import List
+from typing import Any, List, Literal, Optional, Set
+
+try:
+    from google import genai
+except ImportError:
+    genai = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 
 # Load environment variables from .env file
@@ -54,9 +61,13 @@ def init_connection_pool():
 
 # AI Provider configuration
 if AI_PROVIDER == 'gemini':
+    if genai is None:
+        raise ImportError("google-genai is required when AI_PROVIDER=gemini")
     gemini_client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
     MODEL_NAME = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 elif AI_PROVIDER == 'openrouter':
+    if OpenAI is None:
+        raise ImportError("openai is required when AI_PROVIDER=openrouter")
     openrouter_client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=os.getenv('OPENROUTER_API_KEY'),
@@ -72,17 +83,99 @@ SECONDS_PER_REQUEST = float(os.getenv('RATE_LIMIT_SECONDS', DEFAULT_RATE_LIMIT))
 MAX_RUNTIME_SECONDS = 3600 # 1 hour timeout
 PROMPT_FILE = os.getenv('PROMPT_FILE', 'prompt-google.txt')
 
+VALID_SENTIMENTS = {"positive", "neutral", "negative"}
+VALID_CATEGORIES = {
+    "Politics",
+    "Business",
+    "World",
+    "Local",
+    "Sports",
+    "Entertainment",
+    "Technology",
+    "Health",
+    "Science",
+    "Opinion",
+    "Lifestyle",
+    "Education",
+    "Crime",
+    "Environment",
+}
+CATEGORY_BY_LOWER = {category.lower(): category for category in VALID_CATEGORIES}
+
+SentimentValue = Literal["positive", "neutral", "negative"]
+CategoryValue = Literal[
+    "Politics",
+    "Business",
+    "World",
+    "Local",
+    "Sports",
+    "Entertainment",
+    "Technology",
+    "Health",
+    "Science",
+    "Opinion",
+    "Lifestyle",
+    "Education",
+    "Crime",
+    "Environment",
+]
+
 
 
 class ArticleResponse(BaseModel):
     translated_title: str = Field(default="")
     translated_description: str = Field(default="")
     keywords: List[str] = Field(default_factory=list)
-    sentiment: str = Field(default="")
-    category: str = Field(default="")
+    sentiment: SentimentValue
+    category: CategoryValue
 
 
-def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: int) -> list[tuple]:
+def normalize_sentiment(value: Any) -> str:
+    sentiment = str(value).strip().lower()
+    if sentiment not in VALID_SENTIMENTS:
+        raise ValueError(f"Invalid sentiment: {value!r}")
+    return sentiment
+
+
+def normalize_category(value: Any) -> str:
+    category = CATEGORY_BY_LOWER.get(str(value).strip().lower())
+    if category is None:
+        raise ValueError(f"Invalid category: {value!r}")
+    return category
+
+
+def normalize_keywords(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_keywords = [keyword.strip() for keyword in value.split(",")]
+    elif isinstance(value, list):
+        raw_keywords = value
+    else:
+        raise ValueError("Keywords must be a list of strings or a comma-separated string")
+
+    keywords = []
+    for keyword in raw_keywords:
+        normalized = str(keyword).strip()
+        if normalized:
+            keywords.append(normalized)
+    return keywords
+
+
+def normalize_article_response(raw_item: Any) -> ArticleResponse:
+    if not isinstance(raw_item, dict):
+        raise ValueError("Article response item must be an object")
+
+    normalized = dict(raw_item)
+    normalized["sentiment"] = normalize_sentiment(normalized.get("sentiment"))
+    normalized["category"] = normalize_category(normalized.get("category"))
+    normalized["keywords"] = normalize_keywords(normalized.get("keywords", []))
+    return ArticleResponse(**normalized)
+
+
+def fetch_unprocessed_entries(
+    conn: psycopg2.extensions.connection,
+    batch_size: int,
+    excluded_ids: Optional[Set[int]] = None,
+) -> list[tuple]:
     """Fetch a batch of unprocessed RSS feed entries.
     
     Args:
@@ -92,35 +185,46 @@ def fetch_unprocessed_entries(conn: psycopg2.extensions.connection, batch_size: 
     Returns:
         List of tuples containing (id, title, description) for each entry
     """
+    excluded_ids = excluded_ids or set()
+    params: list[Any] = []
+    exclusion_clause = ""
+    if excluded_ids:
+        exclusion_clause = "AND NOT (id = ANY(%s))"
+        params.append(list(excluded_ids))
+
+    params.append(batch_size)
+
     with conn.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(f"""
             SET LOCAL statement_timeout = 60000;
 
             SELECT id, title, description
             FROM rss_feed_entries
             WHERE processed = FALSE
+            {exclusion_clause}
             ORDER BY id ASC
             LIMIT %s;
-        """, (batch_size,))
+        """, params)
         return cursor.fetchall()
 
 
-def mark_as_processed(conn: psycopg2.extensions.connection, ids: list[int], success_ids: list[int]) -> None:
-    """Mark processed entries in the database by setting processed = TRUE.
+def mark_as_processed(conn: psycopg2.extensions.connection, success_ids: list[int]) -> None:
+    """Mark successfully analysed entries in the database by setting processed = TRUE.
 
     Args:
         conn: Database connection
-        ids: List of all entry IDs to mark as processed
-        success_ids: List of entry IDs that were successfully analyzed (unused here)
+        success_ids: List of entry IDs that were successfully analyzed
     """
-    # Note: Update only sets 'processed = TRUE' as 'processing_success' column is not present.
+    if not success_ids:
+        return
+
     with conn.cursor() as cursor:
         cursor.execute("SET LOCAL statement_timeout = 60000;")
         execute_batch(cursor, """
             UPDATE rss_feed_entries
             SET processed = TRUE
             WHERE id = %s;
-        """, [(id_,) for id_ in ids])
+        """, [(id_,) for id_ in success_ids])
 
 def insert_analysed_entries(conn: psycopg2.extensions.connection, analysed_data: list[tuple]) -> None:
     """Insert analysed data into the rss_feed_analysed table.
@@ -248,8 +352,8 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
                 continue
 
             try:
-                validated_item = ArticleResponse(**raw_item)
-            except ValidationError as ve:
+                validated_item = normalize_article_response(raw_item)
+            except (ValidationError, ValueError) as ve:
                 logger.warning(f"Validation error for entry ID {entry_id}: {ve}")
                 continue  # Skip invalid entry
 
@@ -271,6 +375,7 @@ def process_batch(entries: list[tuple]) -> list[tuple]:
 def main():
     start_time = time.time()
     processed_count_in_run = 0
+    deferred_entry_ids = set()
     conn = None
 
     try:
@@ -287,7 +392,7 @@ def main():
                     logger.warning(f"Maximum runtime of {MAX_RUNTIME_SECONDS // 60} minutes exceeded. Exiting.")
                     break
 
-                entries = fetch_unprocessed_entries(conn, BATCH_SIZE)
+                entries = fetch_unprocessed_entries(conn, BATCH_SIZE, deferred_entry_ids)
                 if not entries:
                     logger.info("No more entries to process")
                     break
@@ -305,16 +410,31 @@ def main():
 
                 try:
                     success_ids = [d[0] for d in analysed_data]
+                    failed_ids = sorted(set(entry_ids) - set(success_ids))
 
                     if analysed_data:
                         insert_analysed_entries(conn, analysed_data)
 
-                    mark_as_processed(conn, entry_ids, success_ids)
+                    mark_as_processed(conn, success_ids)
 
                     conn.commit()
 
+                    if failed_ids:
+                        deferred_entry_ids.update(failed_ids)
+                        logger.warning(
+                            "Deferred %s entries after failed or invalid analysis: %s",
+                            len(failed_ids),
+                            failed_ids,
+                        )
+
+                    if not success_ids:
+                        logger.error(
+                            "No valid analysis rows produced for batch %s; entries remain unprocessed for retry.",
+                            entry_ids,
+                        )
+
                     pbar.update(batch_size_fetched)
-                    processed_count_in_run += batch_size_fetched
+                    processed_count_in_run += len(success_ids)
 
                 except psycopg2.Error as db_err:
                     logger.error(f"Database error during commit for batch: {db_err}. Rolling back transaction and continuing.")
@@ -322,14 +442,20 @@ def main():
                         conn.rollback()
                     except psycopg2.Error as rb_err:
                         logger.error(f"Rollback failed: {rb_err}")
+                    deferred_entry_ids.update(entry_ids)
                 except Exception as e:
                     logger.error(f"Unexpected error during DB interaction: {e}. Rolling back and continuing.")
                     try:
                         conn.rollback()
                     except Exception as rb_err:
                         logger.error(f"Rollback failed: {rb_err}")
+                    deferred_entry_ids.update(entry_ids)
 
-        logger.info(f"Processing finished. Total entries processed: {processed_count_in_run}")
+        logger.info(
+            "Processing finished. Total entries successfully analysed: %s. Deferred for future retry: %s",
+            processed_count_in_run,
+            len(deferred_entry_ids),
+        )
 
     except psycopg2.Error as e:
         logger.error(f"Database connection error: {e}")

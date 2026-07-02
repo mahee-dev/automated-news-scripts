@@ -1,8 +1,8 @@
-bs4
-sqlalchemy
 requests
 feedparser
-dotenv
+sqlalchemy
+beautifulsoup4
+python-dotenv
 psycopg2-binary>=2.9
 tqdm
 google-genai

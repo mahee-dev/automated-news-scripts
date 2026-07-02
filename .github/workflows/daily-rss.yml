@@ -19,8 +19,7 @@ jobs:
         with:
           python-version: "3.9"
       - name: Install dependencies
-        run: |
-          pip install requests feedparser sqlalchemy beautifulsoup4 python-dotenv psycopg2-binary tqdm google-genai openai pydantic
+        run: pip install -r requirements.txt
       - name: Run RSS Fetcher
         run: python rss-fetcher-v10.py
       - name: Run RSS Analyser
