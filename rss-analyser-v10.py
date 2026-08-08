@@ -202,7 +202,7 @@ def fetch_unprocessed_entries(
             FROM rss_feed_entries
             WHERE processed = FALSE
             {exclusion_clause}
-            ORDER BY id ASC
+            ORDER BY published DESC NULLS LAST, id DESC
             LIMIT %s;
         """, params)
         return cursor.fetchall()
