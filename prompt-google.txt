@@ -16,4 +16,4 @@ Output (in JSON format):
     {{"translated_title": "translated title for entry 2", "translated_description": "translated description for entry 2", "keywords": ["keyword1", "keyword2", "keyword3"], "sentiment": "positive/negative/neutral", "category": "category here"}}
     // ... one object per entry
 ]
-Ensure the output is valid JSON and includes all fields for each entry. Do not add any extra information or comments outside the JSON structure.
+Ensure the output is valid JSON and includes all fields for each entry. Do not add any extra information or comments outside the JSON structure. 
